@@ -1,4 +1,4 @@
-name: Custom Windows 10 QEMU (Intel Core i3-10100F, 16GB RAM, Intel HD Audio)
+name: Custom Windows 10 QEMU (16GB RAM, Intel HD Audio)
 
 on:
   workflow_dispatch:
@@ -60,7 +60,7 @@ jobs:
             echo " ATTENTION: PLEASE VERIFY RUNNER IN TAILSCALE"
             echo "=================================================="
             
-            # Напрямую выводим ссылку авторизации в консоль
+            # Выводим ссылку авторизации напрямую в консоль
             timeout 15s sudo tailscale up --hostname="win10-qemu-runner-${{ github.run_id }}" --accept-routes || true
             
             echo "=================================================="
@@ -95,11 +95,12 @@ jobs:
           
           export QEMU_AUDIO_DRV=none
 
+          # Чистый запуск KVM с -cpu host
           qemu-system-x86_64 \
             -enable-kvm \
             -m 16384 \
             -smp 4,sockets=1,cores=4,threads=1 \
-            -cpu host,vendor=GenuineIntel,modelname="Intel(R) Core(TM) i3-10100F CPU @ 3.60GHz" \
+            -cpu host \
             -bios /usr/share/ovmf/OVMF.fd \
             -drive file=/tmp/main_disk.qcow2,format=qcow2,index=0,media=disk \
             -drive file=/tmp/win10.iso,index=1,media=cdrom \
@@ -128,7 +129,7 @@ jobs:
           echo " WINDOWS 10 QEMU READY"
           echo "=================================================="
           echo " OS Image     : W18.iso (Archive.org)"
-          echo " CPU Model    : Intel(R) Core(TM) i3-10100F CPU @ 3.60GHz (4 Cores)"
+          echo " CPU Spec     : 4 Cores (Host Passthrough)"
           echo " RAM          : 16 GB (16384 MB)"
           echo " Audio        : Intel HD Audio (ICH9-HDA)"
           echo " Storage Size : 500 GB Main Disk"
@@ -142,3 +143,5 @@ jobs:
             sleep 300
             echo "QEMU Running | Tailscale IP: $TAILSCALE_IP | $(date)"
           done
+
+            
