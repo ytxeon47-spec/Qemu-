@@ -1,0 +1,147 @@
+name: Ubuntu 20.04 Desktop QEMU (VirGL 3D Acceleration)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-ubuntu-3d-qemu:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. Install QEMU, KVM & Core Tools
+        run: |
+          echo "=== [STEP 1/5] Installing QEMU & Base Utilities ==="
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 \
+            qemu-system-gui \
+            qemu-utils \
+            novnc \
+            websockify \
+            curl \
+            wget \
+            aria2
+
+          echo "=== Enabling KVM Permissions ==="
+          sudo chmod 666 /dev/kvm || true
+
+          echo "=== Creating Main Virtual Disk (256GB qcow2) ==="
+          qemu-img create -f qcow2 /tmp/main_disk.qcow2 256G
+
+      - name: 2. Download Ubuntu 20.04 ISO
+        run: |
+          echo "=== [STEP 2/5] Downloading Ubuntu 20.04 ISO ==="
+          
+          ISO_URL="https://archive.org/download/ubuntu-20.04-desktop-amd64_202505/ubuntu-20.04-desktop-amd64.iso"
+          
+          echo "Downloading Ubuntu 20.04 ISO to /tmp/ubuntu2004.iso..."
+          aria2c -x 16 -s 16 -k 1M -d /tmp -o ubuntu2004.iso "$ISO_URL" || wget -O /tmp/ubuntu2004.iso "$ISO_URL"
+          
+          ls -lh /tmp/ubuntu2004.iso
+
+      - name: 3. Setup VirGL 3D Graphics Acceleration Libraries
+        run: |
+          echo "=== [STEP 3/5] Pulling VirGL 3D Renderer & OpenGL Libraries ==="
+          
+          # Явный вызов и подтяжка библиотек 3D-ускорения Mesa & VirGL Renderer
+          sudo apt-get install -y --reinstall \
+            libvirglrenderer1 \
+            libgl1-mesa-dri \
+            libglx-mesa0 \
+            virgl-server || true
+
+          echo "=== Checking VirGL Library Presence ==="
+          ldconfig -p | grep virgl || true
+
+      - name: 4. Connect Tailscale
+        run: |
+          echo "=== [STEP 4/5] Connecting Tailscale ==="
+          curl -fsSL https://tailscale.com/install.sh | sh
+          
+          AUTH_KEY="${{ secrets.TAILSCALE_AUTHKEY }}"
+          
+          if [ -n "$AUTH_KEY" ]; then
+            echo "Attempting auto-login with TAILSCALE_AUTHKEY..."
+            sudo tailscale up --authkey="$AUTH_KEY" --hostname="ubuntu20-qemu-runner-${{ github.run_id }}" --accept-routes || true
+          fi
+
+          TS_IP=$(tailscale ip -4 || true)
+          if [ -z "$TS_IP" ]; then
+            echo "=================================================="
+            echo " ATTENTION: PLEASE VERIFY RUNNER IN TAILSCALE"
+            echo "=================================================="
+            
+            timeout 15s sudo tailscale up --hostname="ubuntu20-qemu-runner-${{ github.run_id }}" --accept-routes || true
+            
+            echo "=================================================="
+            echo " Waiting for you to approve link above..."
+            echo "=================================================="
+            
+            sudo tailscale up --hostname="ubuntu20-qemu-runner-${{ github.run_id }}" --accept-routes > /dev/null 2>&1 &
+            
+            RETRIES=0
+            while [ -z "$TS_IP" ] && [ $RETRIES -lt 60 ]; do
+                TS_IP=$(tailscale ip -4 || true)
+                sleep 3
+                RETRIES=$((RETRIES+1))
+            done
+          fi
+
+          if [ -z "$TS_IP" ]; then
+            echo "ERROR: Tailscale authentication failed or timed out!"
+            exit 1
+          fi
+
+          echo "=================================================="
+          echo " Tailscale Successfully Connected!"
+          echo " Tailscale IP: $TS_IP"
+          echo "=================================================="
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+      - name: 5. Launch QEMU Ubuntu 20.04 & 3D Acceleration Engine
+        run: |
+          echo "=== [STEP 5/5] Launching QEMU with VirGL 3D GPU Acceleration ==="
+          
+          export QEMU_AUDIO_DRV=none
+
+          # Запуск с поддержкой VirtIO-3D (VirGL Renderer)
+          qemu-system-x86_64 \
+            -enable-kvm \
+            -m 16384 \
+            -smp 4,sockets=1,cores=4,threads=1 \
+            -cpu host \
+            -drive file=/tmp/main_disk.qcow2,if=virtio,format=qcow2 \
+            -cdrom /tmp/ubuntu2004.iso \
+            -vga virtio \
+            -display vnc=127.0.0.1:0 \
+            -net nic,model=virtio \
+            -net user \
+            -usb -device usb-tablet \
+            -daemonize
+
+          sleep 5
+
+          NOVNC_DIR="/usr/share/novnc"
+          if [ -d "/usr/share/novnc/vnc_lite.html" ] || [ -f "/usr/share/novnc/vnc.html" ] || [ -f "/usr/share/novnc/index.html" ]; then
+            NOVNC_DIR="/usr/share/novnc"
+          fi
+
+          websockify --web "$NOVNC_DIR" 8006 127.0.0.1:5900 &
+          sleep 2
+
+          echo "=================================================="
+          echo " UBUNTU 20.04 DESKTOP (3D VirGL Accelerated) READY"
+          echo "=================================================="
+          echo " OS Image        : ubuntu-20.04-desktop-amd64.iso"
+          echo " 3D Renderer     : virglrenderer Enabled"
+          echo " CPU / RAM       : 4 Cores Passthrough | 16 GB RAM"
+          echo " Tailscale IP    : $TAILSCALE_IP"
+          echo " Web VNC URL     : http://$TAILSCALE_IP:8006/vnc.html"
+          echo "=================================================="
+
+          END_TIME=$(( $(date +%s) + 21600 ))
+          while [ $(date +%s) -lt $END_TIME ]; do
+            sleep 300
+            echo "QEMU Running | Tailscale IP: $TAILSCALE_IP | $(date)"
+          done
